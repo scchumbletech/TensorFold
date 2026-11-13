@@ -121,6 +121,10 @@ fn post(srv: *Server, conn: *Conn, a: Allocator) void {
         discardBody(conn, a);
         return cancel_ids.post(srv, conn, a, rid);
     }
+    if (@import("responses_background.zig").cancelPath(route)) |rid| { // answered at once, outside admission, as the one above
+        discardBody(conn, a);
+        return @import("responses_background.zig").cancel(srv, conn, a, rid);
+    }
     for (tokens.paths) |r| if (std.mem.eql(u8, route, r)) return tokens.post(srv, conn, a, std.mem.endsWith(u8, route, "/detokenize"));
     const is_speech = std.mem.eql(u8, route, "/v1/audio/speech");
     const is_images = std.mem.eql(u8, route, "/v1/images/generations");
@@ -152,7 +156,7 @@ fn post(srv: *Server, conn: *Conn, a: Allocator) void {
     if (is_decisions) return decisions.post(srv, conn, a);
     if (is_systemone) return systemone.post(srv, conn, a);
     if (is_anthropic) return anthropic.post(srv, conn, a);
-    if (is_responses) return responses.post(srv, conn, a);
+    if (is_responses) return responses.postGated(srv, conn, a, &entered.held);
     openai.post(srv, conn, a, is_chat);
 }
 
