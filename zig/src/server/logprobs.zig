@@ -5,6 +5,7 @@ const json = @import("json");
 const errors = @import("errors.zig");
 const reply_text = @import("reply_text.zig");
 const Server = @import("server.zig").Server;
+const kept_probs = @import("kept_probs.zig");
 const Value = json.Value;
 const Cx = errors.Cx;
 const Allocator = std.mem.Allocator;
@@ -17,10 +18,10 @@ pub fn admit(srv: *Server, cx: *Cx, thinking: bool, think_budget: u32, count: u8
 }
 
 /// ``choices[0].logprobs`` for the answer's tokens: after the first end-of-thinking token and dropped newlines.
-pub fn value(srv: *Server, cx: *Cx, a: Allocator, thinking: bool, tokens: []const u32, rows: []const api.LogprobRow) errors.Refused!Value {
+pub fn value(srv: *Server, cx: *Cx, a: Allocator, thinking: bool, tokens: []const u32, rows: []const api.LogprobRow, opts: kept_probs.Opts) errors.Refused!Value {
     if (rows.len < tokens.len) return cx.other("the engine gave fewer logprob rows than reply tokens");
     const start = (try answerStart(srv, a, thinking, tokens)) orelse tokens.len;
-    return wrap(a, entries(srv, a, tokens[start..], rows[start..tokens.len]) catch |e| return switch (e) {
+    return wrap(a, entries(srv, a, tokens[start..], rows[start..tokens.len], opts) catch |e| return switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         error.Failed => cx.other("the logprob rows are out of step with the reply's tokens, or a forced token has none"),
     });
@@ -31,6 +32,7 @@ pub const Stream = struct {
     rows: std.ArrayList(api.LogprobRow) = .empty, // the reply's rows, copied with each round's tokens
     sent: usize = 0, // answer rows already sent
     spelled: usize = 0, // bytes of the streamed content those rows spell
+    opts: kept_probs.Opts = .{}, // how many alternatives print, and the kept set when asked
 
     /// ``{content, logprobs}`` for `text`, with the rows `streamed` content bytes now cover (all of them once `done`).
     pub fn delta(st: *Stream, srv: *Server, a: Allocator, thinking: bool, ignore_eos: bool, collected: []const u32, text: []const u8, streamed: usize, done: bool) error{ Failed, OutOfMemory }!?Value {
@@ -48,7 +50,7 @@ pub const Stream = struct {
             }
             if (ready > 0) {
                 const from = start + st.sent;
-                const lp = try wrap(a, try entries(srv, a, tokens[from..][0..ready], st.rows.items[from..][0..ready]));
+                const lp = try wrap(a, try entries(srv, a, tokens[from..][0..ready], st.rows.items[from..][0..ready], st.opts));
                 st.sent += ready;
                 const o = try json.newObject(a);
                 try o.put(a, "content", .{ .string = text });
@@ -64,7 +66,7 @@ pub const Stream = struct {
 };
 
 /// ``/v1/completions``' legacy ``logprobs`` from the chat form's rows; ``text_offset`` counts on from `offset` chars.
-pub fn legacy(a: Allocator, rows: Value, offset: *usize) Allocator.Error!Value {
+pub fn legacy(a: Allocator, rows: Value, offset: *usize, kept: bool) Allocator.Error!Value {
     const items = rows.object.get("content").?.array;
     const tokens = try a.alloc(Value, items.len);
     const lps = try a.alloc(Value, items.len);
@@ -88,6 +90,7 @@ pub fn legacy(a: Allocator, rows: Value, offset: *usize) Allocator.Error!Value {
     try out.put(a, "token_logprobs", .{ .array = lps });
     try out.put(a, "top_logprobs", .{ .array = tops });
     try out.put(a, "text_offset", .{ .array = offsets });
+    if (try kept_probs.legacy(a, items, kept)) |k| try out.put(a, "kept_probs", k);
     return .{ .object = out };
 }
 
@@ -130,14 +133,16 @@ fn wrap(a: Allocator, content: []Value) Allocator.Error!Value {
     return .{ .object = out };
 }
 
-fn entries(srv: *Server, a: Allocator, tokens: []const u32, rows: []const api.LogprobRow) error{ Failed, OutOfMemory }![]Value {
+fn entries(srv: *Server, a: Allocator, tokens: []const u32, rows: []const api.LogprobRow, opts: kept_probs.Opts) error{ Failed, OutOfMemory }![]Value {
     const content = try a.alloc(Value, tokens.len);
     for (content, tokens, rows) |*slot, id, r| {
         if (r.token != id or std.math.isNan(r.logprob)) return error.Failed;
         const o = try entry(srv, a, id, r.logprob);
-        const top = try a.alloc(Value, r.count);
-        for (top, r.ids[0..r.count], r.logprobs[0..r.count]) |*t, alt, lp| t.* = .{ .object = try entry(srv, a, alt, lp) };
+        const shown = @min(r.count, opts.shown);
+        const top = try a.alloc(Value, shown);
+        for (top, r.ids[0..shown], r.logprobs[0..shown]) |*t, alt, lp| t.* = .{ .object = try entry(srv, a, alt, lp) };
         try o.put(a, "top_logprobs", .{ .array = top });
+        if (opts.kept) try o.put(a, "kept_probs", try kept_probs.value(srv, a, r, opts.sampling));
         slot.* = .{ .object = o };
     }
     return content;

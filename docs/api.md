@@ -315,6 +315,18 @@ sequences. `/v1/completions` takes the legacy `logprobs`, an integer from 0 thro
 the legacy form, streamed or not: `tokens`, `token_logprobs`, `top_logprobs` (each alternative's text to its logprob)
 and `text_offset` (each token's first character in the completion, counting each token's own text). Other engines,
 the Responses route and the request modes above return HTTP 400 when probabilities are requested.
+`"kept_probs": true` (chat with `logprobs: true`, or `/v1/completions` with `logprobs`) adds, for each reply token,
+the probabilities the sampler drew it from: the tokens left after temperature, `top_k`, `top_p` and `min_p`, in the
+rows' order, renormalized to sum to 1. Chat puts them in each `logprobs.content` entry as `kept_probs`, a list of
+`{token, prob}`; `/v1/completions` adds a `kept_probs` list beside `top_logprobs`, one such list per token. A greedy
+request keeps one token, the best, at probability 1. The server computes them from each token's logprob row with
+the sampler's own cut, so they cost no engine work beyond asking for all 20 alternatives; `top_logprobs` still
+shows the count asked for, and the reply's tokens and every other field are the same with the option on or off.
+A sampled request needs `top_k` from 1 to 20, so the kept set always fits inside the 20 alternatives a row carries;
+other `top_k` values (including none) return HTTP 400, as does a nonzero `presence_penalty` or `frequency_penalty`.
+The kept set is computed from the rows' 32-bit values, so a token whose cumulative `top_p` sum or `min_p` floor falls
+within about 1e-6 of its cut can be listed on the other side of it, and a GPU sampler may skip a kept token more than
+24 below the best in logit over temperature, whose listed probability is under 4e-11.
 Nonstreamed `/v1/completions` also takes vLLM's `prompt_logprobs`, an integer from 0 through 20, on the same engine
 and on GLM-5.3-Flash's CUDA engine.
 `choices[0].prompt_logprobs` has one entry per prompt token: `null` for the first, then an object keyed by token id
