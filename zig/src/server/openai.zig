@@ -242,16 +242,22 @@ pub fn runNamed(srv: *Server, a: Allocator, out: Out, gone: Gone, is_chat: bool,
     const field: []const u8 = if (is_chat) "messages" else "prompt";
     const id = ids.make(a, if (is_chat) "chatcmpl-" else "cmpl-", 32) catch return;
     var cx: Cx = .{ .a = a };
+    // TENSORFOLD_REQUEST_JOURNAL: off, `observed` is `out` and the trace does nothing
+    var trace: @import("request_trace.zig").Trace = .{ .journal = srv.config.journal, .a = a, .id = id, .parent = out };
+    defer trace.finish();
+    const observed = trace.out();
+    if (trace.begin(raw, is_chat, gone.conn.key_label orelse "")) return trace.refuse(id);
     var p = plan(srv, &cx, is_chat, raw, format, client_thinking) catch |e| {
         if (e == error.OutOfMemory) cx.message = "out of memory";
         logRefused(id, cx.message);
         const body = errorBody(a, &cx, field) catch return;
-        out.vt.reply(out.ctx, cx.status(), wrapError(a, body) catch return);
+        observed.vt.reply(observed.ctx, cx.status(), wrapError(a, body) catch return);
         return;
     };
     p.input.id = id;
+    if (srv.config.journal != null) p.input.trace = &trace;
     const turn = cortheon.begin(srv, a, raw, id, is_chat, &p.input);
-    var r: Run = .{ .srv = srv, .a = a, .out = out, .is_chat = is_chat, .plan = p, .id = id, .created = std.Io.Clock.real.now(srv.io).toSeconds(), .turn = turn, .call_ids = .{ .key = &srv.tool_ids, .body = raw } };
+    var r: Run = .{ .srv = srv, .a = a, .out = observed, .is_chat = is_chat, .plan = p, .id = id, .created = std.Io.Clock.real.now(srv.io).toSeconds(), .turn = turn, .call_ids = .{ .key = &srv.tool_ids, .body = raw } };
     if (p.stream) r.stream(gone, field) else r.whole(gone, field);
 }
 
