@@ -6,6 +6,13 @@ pub fn steps(b: *std.Build) void {
     const api = b.createModule(.{ .root_source_file = b.path("zig/src/core/engine_api.zig"), .target = b.graph.host, .optimize = .debug, .link_libc = true, .imports = &.{.{ .name = "lanes", .module = lanes }} });
     const interrupted = b.createModule(.{ .root_source_file = b.path("zig/src/core/lane_host_interrupted_test.zig"), .target = b.graph.host, .optimize = .debug, .link_libc = true, .imports = &.{.{ .name = "lanes", .module = lanes }} });
     b.step("test-lane-interrupted-host", "Interrupted prompt retention and clean retries without devices").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = interrupted, .filters = &.{"interrupted prefill:"} })).step);
+    const seeds = b.addOptions(); // -Dexplore-seeds=N sweeps N schedules; -Dexplore-seed=S replays one
+    seeds.addOption(u32, "seeds", b.option(u32, "explore-seeds", "Schedules test-lane-explore-host runs a scenario") orelse 200);
+    seeds.addOption(?u64, "seed", b.option(u64, "explore-seed", "One lane host schedule to replay (a failure prints it)"));
+    seeds.addOption(bool, "tally", b.option(bool, "explore-tally", "Print what the explored schedules did") orelse false);
+    const explore = b.createModule(.{ .root_source_file = b.path("zig/src/core/lane_host_explore_test.zig"), .target = b.graph.host, .optimize = .debug, .link_libc = true, .imports = &.{.{ .name = "lanes", .module = lanes }} });
+    explore.addOptions("explore_options", seeds);
+    b.step("test-lane-explore-host", "Lane host invariants under seeded arrivals, cancels, room and pressure, without devices").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = explore, .filters = &.{"explore:"} })).step);
     const halt = b.addTest(.{ .root_module = api, .filters = &.{ "halt (", "halt fails" } });
     b.step("test-lane-halt-host", "Halt ordering with a fake backend and no GPU dependencies").dependOn(&b.addRunArtifact(halt).step);
     b.step("test-lane-lone-host", "Existing lone-driver handoff and reclaim with a fake backend").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = api, .filters = &.{"lone driver"} })).step);
