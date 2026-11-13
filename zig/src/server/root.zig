@@ -285,4 +285,7 @@ test {
 test {
     _ = @import("request_starts_turns_test.zig");
     _ = @import("thinking_request_test.zig");
+    _ = @import("speech_cli.zig");
+    _ = @import("speech_tempo.zig");
+    _ = @import("speech_tempo_http_test.zig");
 }
