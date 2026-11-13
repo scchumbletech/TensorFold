@@ -38,6 +38,8 @@ pub const Out = struct {
         reply: *const fn (ctx: *anyopaque, status: u16, payload: Value) void,
         /// Bytes that keep a silent stream alive (an SSE comment, or the API's ping); null: none.
         keepalive: ?*const fn (ctx: *anyopaque) error{Closed}!void = null,
+        /// A prompt's progress as a translated route's own event (Responses); null: a chunk with no choices.
+        progress: ?*const fn (ctx: *anyopaque, p: @import("engine_api").Progress) error{Closed}!void = null,
     };
 };
 
@@ -154,7 +156,7 @@ pub fn plan(srv: *Server, cx: *Cx, is_chat: bool, raw: Value, format: ?[]const u
         input.temperature = if (t == .float) t.float else std.fmt.parseFloat(f64, t.int) catch 0;
     };
     const sampling = try json.newObject(cx.a);
-    for ([_][]const u8{ "temperature", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty", "seed", "priority", "model", "draft", "thinking_budget", "ignore_eos", "return_token_ids", "stop", "grammar_budget" } ++ grammar.fields) |k| if (body.get(k)) |v| try sampling.put(cx.a, k, v);
+    for ([_][]const u8{ "temperature", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty", "seed", "priority", "model", "draft", "thinking_budget", "ignore_eos", "return_token_ids", "return_progress", "stop", "grammar_budget" } ++ grammar.fields) |k| if (body.get(k)) |v| try sampling.put(cx.a, k, v);
     try grammar.refusal(cx, body);
     if (input.tools.len > 0 and try tool_specs.choiceRequiresCall(cx.a, body.get("tool_choice"))) try sampling.put(cx.a, "tool_call_required", .{ .bool = true });
     if (body.field("parallel_tool_calls")) |p| if (p == .bool and !p.bool) try sampling.put(cx.a, "tool_call_single", .{ .bool = true });
@@ -442,6 +444,16 @@ const Run = struct {
             s.pending.clearRetainingCapacity();
         }
 
+        /// A prompt's progress (``return_progress``) as a chunk with no choices, which a client reading choices skips.
+        fn progress(ctx: *anyopaque, p: @import("engine_api").Progress) error{Closed}!void {
+            const s: *StreamSink = @ptrCast(@alignCast(ctx));
+            if (!s.opened) return; // nothing goes before the stream's head
+            if (s.run.out.vt.progress) |own| return own(s.run.out.ctx, p);
+            const c = s.run.chunk(null, null) catch return error.Closed;
+            @import("prompt_progress.zig").put(s.run.a, c.object, p) catch return error.Closed;
+            return s.run.emit(c);
+        }
+
         fn call(ctx: *anyopaque, delta: Value) error{Closed}!void {
             const s: *StreamSink = @ptrCast(@alignCast(ctx));
             const r = s.run;
@@ -513,7 +525,7 @@ const Run = struct {
         defer if (!handed) r.srv.release(prepared.preparing, prepared.request);
         var sink_state: StreamSink = .{ .run = r, .tools = tools, .prompt_len = prepared.prompt_len };
         handed = true;
-        const sink: chat.Sink = .{ .ctx = &sink_state, .call = StreamSink.call, .begin = StreamSink.begin };
+        const sink: chat.Sink = .{ .ctx = &sink_state, .call = StreamSink.call, .begin = StreamSink.begin, .progress = StreamSink.progress };
         var live = gone;
         live.out = r.out;
         live.opened = &sink_state.opened;
