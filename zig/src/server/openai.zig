@@ -174,6 +174,7 @@ pub fn plan(srv: *Server, cx: *Cx, is_chat: bool, raw: Value, format: ?[]const u
             return cx.refuse("logprobs support chat without tools, stop strings, structured output or a thinking budget");
     }
     input.logprobs = logprobs;
+    input.cache_salt = try @import("cache_salt.zig").field(&srv.tool_ids, cx, body);
     var policy: tool_stream.Policy = .{};
     if (body.field("parallel_tool_calls")) |p| {
         if (p != .bool) return cx.refuse("parallel_tool_calls must be a boolean");
@@ -250,6 +251,7 @@ pub fn runNamed(srv: *Server, a: Allocator, out: Out, gone: Gone, is_chat: bool,
         return;
     };
     p.input.id = id;
+    p.input.cache_salt = @import("cache_salt.zig").ofRequest(srv, p.input.cache_salt, gone.conn.key_digest);
     const turn = cortheon.begin(srv, a, raw, id, is_chat, &p.input);
     var r: Run = .{ .srv = srv, .a = a, .out = out, .is_chat = is_chat, .plan = p, .id = id, .created = std.Io.Clock.real.now(srv.io).toSeconds(), .turn = turn, .call_ids = .{ .key = &srv.tool_ids, .body = raw } };
     if (p.stream) r.stream(gone, field) else r.whole(gone, field);
